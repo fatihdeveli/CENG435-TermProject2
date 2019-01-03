@@ -2,106 +2,195 @@ from socket import *
 import thread
 from time import sleep
 from datetime import datetime
-import _strptime
-import hashlib
-import pickle
+import sys
 
 # Receiving ports
-r1_port = 3027
-r2_port = 3028
+r1_port = 4007
+r2_port = 4008
 # Sending ports
-s1_port = 3020
-s2_port = 3021
+s1_port = 4000
+s2_port = 4000
 
-# Send address
+# Send addresses
 s1_name = '10.10.2.1'
 s2_name = '10.10.4.1'
 
-message_size = 512
+# Payload is 500 bytes, 5 bytes of packet number and one byte checksum
+# is added, total size is 506 bytes.
+message_size = 506
 
-result_list = [None] * 5000
-last_successful = -1
+# Keep the file transfer time
+starting_time = None
 
-def receive_from_1():
-	global last_successful
-	global result_list
+# Number of packets arrived (excluding duplicates)
+packets_received_1 = 0 # From route 1
+packets_received_2 = 0 # From route 2
+
+# Create a list to store incoming data
+result_list = [None] * 10001
+last_successful_ack = -1 # Last sequence number received successfully.
+
+def checksum(msg):
+	'''
+	Function calculates the checksum of the given message.
+	Returns a byte.
+	Works like a hash function with mod 256 operation.
+	Mod operand should be 256 so that it will produce a one-byte
+	result.
+	'''
+	chksum = 0
+	for byte in bytes(msg):
+		chksum = chksum + ord(byte)
+	chksum = chksum % 256
+	chksum = chr(chksum) # Convert to byte
+	return chksum
+
+def packetize(seqnum, data):
+	'''
+	Function creates a packet with given sequence number and byte
+	stream data.
+	First 5 characters of the packet represent the sequence number,
+	and the last byte is the checksum.
+	'''
+	# Create 5 character long string out of seqnum.
+	seqnum = str(seqnum)
+	while len(seqnum) < 5:
+		seqnum = '0' + seqnum
+	packet = seqnum + data # Combine
+	# Calculate checksum
+	packet = packet + checksum(packet)
+	return packet
+
+
+def receive_from_1(): # Thread 1 communicates through router 1
+	global last_successful_ack
+	global packets_received_1
+
 	s1_socket = socket(AF_INET, SOCK_DGRAM)
 	r1_socket = socket(AF_INET, SOCK_DGRAM)
 	r1_socket.bind(('', r1_port))
 	while 1:
-		received_list = []
-		message, r1_address = r1_socket.recvfrom(message_size)
-		#print "message: " + message
-		message_to_send = [] # Ack
-		try:
-			received_list = pickle.loads(message)
-			received_checksum = received_list.pop()
-			calculated_checksum = hashlib.md5()
-			calculated_checksum.update(pickle.dumps(received_list))
-
-			if (received_checksum == calculated_checksum.digest()): # OK
-				print "received message is OK"
-				# received_list[0] -> received seqnum
-				# received_list[1] -> received data
-				print "placed message to " + str(received_list[0])
-				result_list[received_list[0]] = received_list[1]
-				i = last_successful+1
- 				while 1:
-					if (result_list[i] == None):
-						message_to_send.append(i)
-						last_successful = i-1
-						break
-					i = i+1
-			else: # Corrupted message
-				print "received corrupted message"
-				message_to_send.append(last_successful+1)
-		except:
-			print "will send ack last suc+1: "  + str(last_successful+1)
-			message_to_send.append(last_successful+1)
-
-		try:
-			# Calculate checksum for ack
-			print "sending ack " + str(message_to_send[0])
-			checksum = hashlib.md5()
-			checksum.update(pickle.dumps(message_to_send))
-			message_to_send.append(checksum.digest())
-			s1_socket.sendto(pickle.dumps(message_to_send) , (s1_name, s1_port))
-		except:
-			print "Error calculating checksum for ack"
-			exit()
+		message = bytearray(message_size)
+		r1_socket.recv_into(message)
+		received_checksum = ord(chr(message[-1]))
+		seqnum = int(message[:5]) # Sequence number of the message
+		# Delete checksum field to calculate own checksum
+		message = message[:len(message)-1]
+		# Calculate own checksum
+		calculated_checksum = ord(checksum(message))
+ 		if (received_checksum == calculated_checksum): # Message is OK
+			if (result_list[seqnum] == None):
+				#print ("1-received message is OK. Placed message to " + str(seqnum))
+				result_list[seqnum] = message[5:]
+				packets_received_1 = packets_received_1 + 1
+			# Else, received duplicate message, do nothing.
+			#else:
+				#print("1-Received duplicate message " + str(seqnum))
 
 
-def receive_from_2(): # Thread r2 communicates with router 2
+			# Find the ack number to send by finding the smallest index with an empty
+			# slot in the receiving list.
+			i = last_successful_ack+1
+			while 1:
+				if (result_list[i] == None):
+					ack_message = packetize(i, '') # Make ack packet
+					#print "1-Sending ack " + str(i)
+					last_successful = i-1
+					break
+				i = i+1
+			s1_socket.sendto(ack_message, (s1_name, s1_port)) # Send ack
+		else: # Received corrupted message
+			#print ("1-Received corrupted message")
+			ack_message = packetize(last_successful_ack+1, '')
+			s1_socket.sendto(ack_message, (s1_name, s1_port))
 
+
+def receive_from_2(): # Thread 2 communicates through router 2
+	global last_successful_ack
+	global packets_received_2
 	s2_socket = socket(AF_INET, SOCK_DGRAM)
 	r2_socket = socket(AF_INET, SOCK_DGRAM)
 	r2_socket.bind(('', r2_port))
 	while 1:
-		message, r2_address = r2_socket.recvfrom(message_size)
-		#print "message from r2:"
-		#s2_socket.sendto('aynn knk', (s2_name, s2_port))
+		message = bytearray(message_size)
+		r2_socket.recv_into(message)
+		first_packet_arrived = True
+		received_checksum = ord(chr(message[-1]))
+		seqnum = int(message[:5]) # Sequence number of the message
+		# Delete checksum field to calculate own checksum
+		message = message[:len(message)-1]
+
+		# Calculate own checksum
+		calculated_checksum = ord(checksum(message))
+ 		if (received_checksum == calculated_checksum): # Message is OK
+			if (result_list[seqnum] == None):
+				#print "2-received message is OK. Placed message to " + str(seqnum))
+				result_list[seqnum] = message[5:]
+				packets_received_2 = packets_received_2 + 1
+			# Else, received duplicate message, do nothing.
+
+			# Find the ack number to send by finding the smallest index with an empty
+			# slot in the receiving list.
+			i = last_successful_ack+1
+			while 1:
+				if (result_list[i] == None):
+					ack_message = packetize(i, '')
+					#print ("2-Sending ack " + str(i))
+					last_successful_ack = i-1
+					break
+				i = i+1
+			s2_socket.sendto(ack_message, (s2_name, s2_port)) # Send ack
+		else: # Received corrupted message
+			#print ("2-Received corrupted message" + str(seqnum))
+			ack_message = packetize(last_successful_ack+1, '')
+			s2_socket.sendto(ack_message, (s2_name, s2_port))
+
 
 def main():
 	try:
 		thread.start_new_thread(receive_from_1,())
 		thread.start_new_thread(receive_from_2,())
-		#thread.start_new_thread(send_to_1)
-		#thread.start_new_thread(send_to_2)
+		print "Ready to receive."
 	except:
-		print "Error: unable to start thread"
+		print ("Error: unable to start thread")
 		exit()
-	try:
-		sleep(60)
-		print("End")
-		st = ''
-		for e in result_list:
-			if e == None:
+
+	# Wait for the first packet to arrive and start timer to calculate
+	# file transfer time.
+	while 1:
+		sleep(0.01)
+		if (packets_received_1 + packets_received_2 > 0):
+			starting_time = datetime.now()
+			print "Receiving packets..."
+			break
+
+	while 1:
+		try:
+			sleep(1)
+			sys.stdout.write("\r" + str((packets_received_1 + packets_received_2)/100) + "% completed.")
+			sys.stdout.flush()
+			#sys.stdout.write(out)
+			if (packets_received_1 + packets_received_2 >= 9999):
+				ending_time = datetime.now()
+				delta = ending_time - starting_time
+				print("Process completed successfully.")
+				print "Time elapsed: " + str(delta.seconds) + " seconds."
+				# Log the output to the log file.
+				with open ("results.log", "a+") as f:
+					f.write(str(ending_time) + " - Time elapsed: " + str(delta.seconds) + "\n")
 				break
-			st = st + str(e)
-		with open('bitanedosya', 'w') as bit:
-			bit.write(st)
-	except(KeyboardInterrupt):
-		exit()
+		except(KeyboardInterrupt):
+			print ("Process killed by user.")
+			exit()
+
+	# Create the output file.
+	st = ''
+	for e in result_list:
+		if e == None:
+			break
+		st = st + str(e)
+	with open('output.txt', 'w') as bit:
+		bit.write(st)
 
 
 if __name__ == '__main__':
