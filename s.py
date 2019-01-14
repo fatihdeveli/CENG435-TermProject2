@@ -11,14 +11,13 @@ def main():
 	# Read the input file
 	with open('input.txt', 'rb') as file:
 		file_data = file.read()
-
-	file_size = len(file_data)
 	file.close()
 
+	# Establish TCP connection with broker
 	sckt = socket(AF_INET, SOCK_STREAM)
 	sckt.connect((broker_name, send_port))
 
-	# Send
+	# Send packets
 	for i in range(10000):
 		message = file_data[i*message_size:(i+1)*message_size]
 		sckt.send(message)

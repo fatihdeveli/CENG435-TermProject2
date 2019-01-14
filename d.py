@@ -26,7 +26,7 @@ starting_time = None
 packets_received_1 = 0 # From route 1
 packets_received_2 = 0 # From route 2
 
-# Create a list to store incoming data
+# Create a list to store incoming data, buffer
 result_list = [None] * 10001
 last_successful_ack = -1 # Last sequence number received successfully.
 
@@ -59,7 +59,7 @@ def packetize(seqnum, data):
 	packet = seqnum + data # Combine
 	# Calculate checksum
 	packet = packet + checksum(packet)
-	return packet
+	return packet # packet that has sequence number, checksum fields in it
 
 
 def receive_from_1(): # Thread 1 communicates through router 1
@@ -81,7 +81,7 @@ def receive_from_1(): # Thread 1 communicates through router 1
  		if (received_checksum == calculated_checksum): # Message is OK
 			if (result_list[seqnum] == None):
 				#print ("1-received message is OK. Placed message to " + str(seqnum))
-				result_list[seqnum] = message[5:]
+				result_list[seqnum] = message[5:]# put message to its place in the results list
 				packets_received_1 = packets_received_1 + 1
 			# Else, received duplicate message, do nothing.
 			#else:
@@ -90,19 +90,19 @@ def receive_from_1(): # Thread 1 communicates through router 1
 
 			# Find the ack number to send by finding the smallest index with an empty
 			# slot in the receiving list.
-			i = last_successful_ack+1
+			i = last_successful_ack+1 # In order not to affected by threads, we take last_succesful_ack value to a local variable
 			while 1:
 				if (result_list[i] == None):
 					ack_message = packetize(i, '') # Make ack packet
 					#print "1-Sending ack " + str(i)
-					last_successful = i-1
+					last_successful = i-1  # update to last acked packet to use cumulative ack
 					break
 				i = i+1
 			s1_socket.sendto(ack_message, (s1_name, s1_port)) # Send ack
 		else: # Received corrupted message
 			#print ("1-Received corrupted message")
-			ack_message = packetize(last_successful_ack+1, '')
-			s1_socket.sendto(ack_message, (s1_name, s1_port))
+			ack_message = packetize(last_successful_ack+1, '') # Make ack packet
+			s1_socket.sendto(ack_message, (s1_name, s1_port))  # Send ack
 
 
 def receive_from_2(): # Thread 2 communicates through router 2
@@ -131,19 +131,19 @@ def receive_from_2(): # Thread 2 communicates through router 2
 
 			# Find the ack number to send by finding the smallest index with an empty
 			# slot in the receiving list.
-			i = last_successful_ack+1
+			i = last_successful_ack+1 # In order not to affected by threads, we take last_succesful_ack value to a local variable
 			while 1:
 				if (result_list[i] == None):
-					ack_message = packetize(i, '')
+					ack_message = packetize(i, '') # Make ack packet
 					#print ("2-Sending ack " + str(i))
-					last_successful_ack = i-1
+					last_successful_ack = i-1 # update to last acked packet to use cumulative ack
 					break
 				i = i+1
 			s2_socket.sendto(ack_message, (s2_name, s2_port)) # Send ack
 		else: # Received corrupted message
 			#print ("2-Received corrupted message" + str(seqnum))
-			ack_message = packetize(last_successful_ack+1, '')
-			s2_socket.sendto(ack_message, (s2_name, s2_port))
+			ack_message = packetize(last_successful_ack+1, '') # Make ack packet
+			s2_socket.sendto(ack_message, (s2_name, s2_port))  # Send ack
 
 
 def main():
@@ -160,19 +160,20 @@ def main():
 	while 1:
 		sleep(0.01)
 		if (packets_received_1 + packets_received_2 > 0):
-			starting_time = datetime.now()
+			starting_time = datetime.now() # start timer to calculate file trasfer time
 			print "Receiving packets..."
 			break
 
 	while 1:
 		try:
 			sleep(1)
+			 # to show the progress of how much packet is received
 			sys.stdout.write("\r" + str((packets_received_1 + packets_received_2)/100) + "% completed.")
 			sys.stdout.flush()
-			#sys.stdout.write(out)
+
 			if (packets_received_1 + packets_received_2 >= 9999):
-				ending_time = datetime.now()
-				delta = ending_time - starting_time
+				ending_time = datetime.now() # the time when the file transfer is finished
+				delta = ending_time - starting_time # difference is the file tranfer time that we are looking for
 				print("Process completed successfully.")
 				print "Time elapsed: " + str(delta.seconds) + " seconds."
 				# Log the output to the log file.

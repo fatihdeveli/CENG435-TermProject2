@@ -107,4 +107,5 @@ venv.bak/
 Report/
 Testers/
 results.log
-plotter.m
+input.txt
+*.tar.gz
